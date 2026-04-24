@@ -67,6 +67,23 @@ Total return · annualized return · annualized vol · annualized Sharpe · max 
 
 Each pair is run through an **Engle–Granger** test (`statsmodels.tsa.stattools.coint`) before backtesting, with the t-statistic, p-value, and pass/fail at `--cointegration-alpha` printed alongside the performance summary. Disable with `--no-cointegration`.
 
+## Results
+
+| Pair     | Cointegrated | Return | Sharpe |
+|----------|-------------|--------|--------|
+| GLD/SLV  | No          | -20%   | -0.22  |
+| XOM/CVX  | No          | +67%   | 0.52   |
+| MA/V     | Yes         | +22%   | 0.37   |
+| EWA/EWC  | Yes         | +5%    | 0.12   |
+
+## Insights
+
+- Cointegration is a strong but not sufficient condition for profitability. While MA/V showed stable performance under cointegration, EWA/EWC demonstrated that statistical linkage alone does not guarantee strong returns.
+- Non-cointegrated pairs such as GLD/SLV consistently underperformed, confirming the importance of validating mean reversion assumptions before trading.
+- Some non-cointegrated pairs (e.g., XOM/CVX) still generated positive returns, suggesting that short-term correlation and sector dynamics can temporarily support mean reversion behavior.
+- Transaction costs had a material impact on profitability across all pairs, significantly reducing net returns and highlighting the importance of realistic execution modeling.
+- Strategy performance is highly sensitive to asset selection, reinforcing that pair selection is as important as signal design.
+- 
 ## Notes on realism
 
 - Prices are auto-adjusted (splits + dividends) via `yfinance(auto_adjust=True)`.
