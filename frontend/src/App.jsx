@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Activity } from 'lucide-react'
+import { Activity, BarChart2, FlaskConical } from 'lucide-react'
 import { api } from './api/client.js'
 import PairSelector from './components/PairSelector.jsx'
 import RunHistory from './components/RunHistory.jsx'
@@ -10,6 +10,9 @@ import ZScoreChart from './components/ZScoreChart.jsx'
 import DrawdownChart from './components/DrawdownChart.jsx'
 import TradeHistogramChart from './components/TradeHistogramChart.jsx'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
+import RobustnessLab from './components/RobustnessLab.jsx'
+
+// ── Empty state ───────────────────────────────────────────────
 
 function EmptyState() {
   return (
@@ -37,6 +40,8 @@ function EmptyState() {
     </div>
   )
 }
+
+// ── Results header ────────────────────────────────────────────
 
 function ResultsHeader({ result, onExport }) {
   const ts = result.timestamp
@@ -84,6 +89,14 @@ function ResultsHeader({ result, onExport }) {
   )
 }
 
+function SectionLabel({ children }) {
+  return (
+    <p className="text-xs font-semibold tracking-widest uppercase text-q-faint mb-3">
+      {children}
+    </p>
+  )
+}
+
 function exportTradesToCsv(result) {
   if (!result?.trades?.length) return
   const cols = ['side', 'entry_date', 'exit_date', 'pnl', 'return', 'beta', 'forced_close']
@@ -100,29 +113,105 @@ function exportTradesToCsv(result) {
   URL.revokeObjectURL(url)
 }
 
+// ── Tab nav ───────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'backtest',   label: 'Backtest',      Icon: BarChart2    },
+  { id: 'robustness', label: 'Robustness Lab', Icon: FlaskConical },
+]
+
+function TabNav({ active, onChange }) {
+  return (
+    <div className="flex gap-1 px-6 border-b border-q-border bg-q-surface/40">
+      {TABS.map(({ id, label, Icon }) => (
+        <button
+          key={id}
+          onClick={() => onChange(id)}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold transition-all border-b-2 -mb-px ${
+            active === id
+              ? 'border-q-accent text-q-accent'
+              : 'border-transparent text-q-faint hover:text-q-muted'
+          }`}
+        >
+          <Icon size={12} />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ── Backtest results view ─────────────────────────────────────
+
+function BacktestView({ result, onExport }) {
+  return (
+    <div className="p-6 space-y-6 max-w-7xl">
+      <ResultsHeader result={result} onExport={onExport} />
+      <KPICards metrics={result.metrics} cointegration={result.cointegration} />
+      <InsightPanel insight={result.insight} cointegration={result.cointegration} />
+
+      <div className="rounded-xl border border-q-border bg-q-surface p-4">
+        <SectionLabel>Equity Curve</SectionLabel>
+        <EquityCurveChart
+          data={result.timeseries.equity}
+          initialCapital={result.config?.initial_capital ?? 100000}
+        />
+      </div>
+
+      <div className="rounded-xl border border-q-border bg-q-surface p-4">
+        <SectionLabel>Z-Score · Entry bands ±{result.params?.entry_z ?? 2.0}</SectionLabel>
+        <ZScoreChart
+          data={result.timeseries.zscore}
+          entryZ={result.params?.entry_z ?? 2.0}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="rounded-xl border border-q-border bg-q-surface p-4">
+          <SectionLabel>Drawdown</SectionLabel>
+          <DrawdownChart data={result.timeseries.drawdown} />
+        </div>
+        <div className="rounded-xl border border-q-border bg-q-surface p-4">
+          <SectionLabel>Trade Return Distribution</SectionLabel>
+          <TradeHistogramChart trades={result.trades} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Root App ──────────────────────────────────────────────────
+
 export default function App() {
-  const [result, setResult]   = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState(null)
-  const [history, setHistory] = useState([])
+  // backtest state
+  const [result, setResult]       = useState(null)
+  // robustness state — lives here so it survives tab switches
+  const [robResult, setRobResult] = useState(null)
+  const [robError, setRobError]   = useState(null)
+
+  const [loading, setLoading]     = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState(null)
+  const [error, setError]         = useState(null)
+  const [history, setHistory]     = useState([])
+  const [activeTab, setActiveTab] = useState('backtest')
 
   const refreshHistory = useCallback(async () => {
-    try {
-      const h = await api.getHistory()
-      setHistory(h)
-    } catch {
-      // non-fatal
-    }
+    try { setHistory(await api.getHistory()) } catch { /* non-fatal */ }
   }, [])
 
   useEffect(() => { refreshHistory() }, [refreshHistory])
 
+  // ── Backtest handler ──────────────────────────────────────
   const handleRun = useCallback(async (params) => {
     setLoading(true)
+    setLoadingMsg(null)
     setError(null)
     try {
       const res = await api.runBacktest(params)
       setResult(res)
+      setRobResult(null)   // clear stale robustness result for the new pair
+      setRobError(null)
+      setActiveTab('backtest')
       refreshHistory()
     } catch (err) {
       setError(err.message)
@@ -131,12 +220,31 @@ export default function App() {
     }
   }, [refreshHistory])
 
+  // ── Robustness handler ────────────────────────────────────
+  const handleRunRobustness = useCallback(async (payload) => {
+    setLoading(true)
+    setLoadingMsg('Running Monte Carlo simulations…')
+    setRobError(null)
+    try {
+      const res = await api.runRobustness(payload)
+      setRobResult(res)
+    } catch (err) {
+      setRobError(err.message)
+    } finally {
+      setLoading(false)
+      setLoadingMsg(null)
+    }
+  }, [])
+
   const handleLoadRun = useCallback(async (runId) => {
     setLoading(true)
+    setLoadingMsg(null)
     setError(null)
     try {
-      const res = await api.getRun(runId)
-      setResult(res)
+      setResult(await api.getRun(runId))
+      setRobResult(null)
+      setRobError(null)
+      setActiveTab('backtest')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -145,12 +253,7 @@ export default function App() {
   }, [])
 
   const handleClearHistory = useCallback(async () => {
-    try {
-      await api.clearHistory()
-      setHistory([])
-    } catch {
-      // non-fatal
-    }
+    try { await api.clearHistory(); setHistory([]) } catch { /* non-fatal */ }
   }, [])
 
   return (
@@ -168,7 +271,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs text-q-faint font-mono">
-            <span className="hidden md:block">pairs-trading · mean-reversion · cointegration</span>
+            <span className="hidden md:block">pairs-trading · mean-reversion · monte-carlo</span>
             <span className="w-2 h-2 rounded-full bg-q-green animate-pulse-slow" title="API online" />
           </div>
         </div>
@@ -191,74 +294,38 @@ export default function App() {
           </div>
         </aside>
 
-        {/* Main content */}
-        <main className="flex-1 overflow-y-auto">
+        {/* Right panel */}
+        <div className="flex-1 flex flex-col overflow-hidden">
           {error && (
-            <div className="mx-6 mt-4 px-4 py-3 rounded-lg bg-q-red/10 border border-q-red/30 text-q-red text-sm">
+            <div className="mx-6 mt-4 px-4 py-3 rounded-lg bg-q-red/10 border border-q-red/30 text-q-red text-sm flex-none">
               <strong>Error: </strong>{error}
             </div>
           )}
 
-          {!result ? (
-            <EmptyState />
-          ) : (
-            <div className="p-6 space-y-6 max-w-7xl">
-              <ResultsHeader
+          {result && <TabNav active={activeTab} onChange={setActiveTab} />}
+
+          <main className="flex-1 overflow-y-auto">
+            {!result ? (
+              <EmptyState />
+            ) : activeTab === 'backtest' ? (
+              <BacktestView
                 result={result}
                 onExport={() => exportTradesToCsv(result)}
               />
-
-              {/* KPI grid */}
-              <KPICards metrics={result.metrics} cointegration={result.cointegration} />
-
-              {/* Quant insight */}
-              <InsightPanel insight={result.insight} cointegration={result.cointegration} />
-
-              {/* Equity curve – full width */}
-              <div className="rounded-xl border border-q-border bg-q-surface p-4">
-                <SectionLabel>Equity Curve</SectionLabel>
-                <EquityCurveChart
-                  data={result.timeseries.equity}
-                  initialCapital={result.config?.initial_capital ?? 100000}
-                />
-              </div>
-
-              {/* Z-Score – full width */}
-              <div className="rounded-xl border border-q-border bg-q-surface p-4">
-                <SectionLabel>
-                  Z-Score · Entry bands ±{result.params?.entry_z ?? 2.0}
-                </SectionLabel>
-                <ZScoreChart
-                  data={result.timeseries.zscore}
-                  entryZ={result.params?.entry_z ?? 2.0}
-                />
-              </div>
-
-              {/* Drawdown + Histogram side-by-side */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="rounded-xl border border-q-border bg-q-surface p-4">
-                  <SectionLabel>Drawdown</SectionLabel>
-                  <DrawdownChart data={result.timeseries.drawdown} />
-                </div>
-                <div className="rounded-xl border border-q-border bg-q-surface p-4">
-                  <SectionLabel>Trade Return Distribution</SectionLabel>
-                  <TradeHistogramChart trades={result.trades} />
-                </div>
-              </div>
-            </div>
-          )}
-        </main>
+            ) : (
+              <RobustnessLab
+                backtestResult={result}
+                robResult={robResult}
+                robError={robError}
+                onRun={handleRunRobustness}
+                loading={loading}
+              />
+            )}
+          </main>
+        </div>
       </div>
 
-      {loading && <LoadingOverlay />}
+      {loading && <LoadingOverlay message={loadingMsg} />}
     </div>
-  )
-}
-
-function SectionLabel({ children }) {
-  return (
-    <p className="text-xs font-semibold tracking-widest uppercase text-q-faint mb-3">
-      {children}
-    </p>
   )
 }

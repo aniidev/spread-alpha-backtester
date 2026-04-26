@@ -27,6 +27,14 @@ from src.data import PriceLoader
 from src.runner import PairRun, run_pair
 from src.strategies import PairsParams
 from src.utils.cointegration import CointegrationResult
+from src.robustness import (
+    aggregate_summary as rob_aggregate,
+    bootstrap_trades,
+    compute_robustness_score,
+    cost_sensitivity,
+    generate_robustness_insight,
+    random_window_test,
+)
 
 app = FastAPI(title="Spread Alpha Backtester API", version="1.0.0")
 
@@ -388,3 +396,131 @@ def clear_history() -> dict:
     for f in RUNS_DIR.glob("*.json"):
         f.unlink(missing_ok=True)
     return {"status": "cleared"}
+
+
+# ── Robustness endpoint ───────────────────────────────────────
+
+class RobustnessRequest(BaseModel):
+    ticker_a: str = Field(..., min_length=1, max_length=10)
+    ticker_b: str = Field(..., min_length=1, max_length=10)
+    start: str = "2020-01-01"
+    end: str = "2024-12-31"
+    # Strategy params (mirrors BacktestRequest)
+    zscore_lookback: int = Field(60, ge=5, le=252)
+    entry_z: float = Field(2.0, gt=0, le=5)
+    exit_z: float = Field(0.0, ge=0, lt=5)
+    rolling_beta: bool = False
+    beta_lookback: int = Field(60, ge=10, le=252)
+    train_fraction: float = Field(0.5, gt=0, le=1)
+    initial_capital: float = Field(100_000.0, gt=0)
+    transaction_cost_bps: float = Field(10.0, ge=0, le=100)
+    target_dollar_exposure: Optional[float] = None
+    # Robustness config
+    n_window_sims: int = Field(200, ge=50, le=500)
+    window_years: float = Field(2.0, ge=0.5, le=5.0)
+    n_bootstrap_sims: int = Field(500, ge=100, le=2000)
+    cost_range_bps: list[float] = [0, 5, 10, 20, 30, 40, 50, 75, 100]
+
+
+@app.post("/api/robustness")
+def run_robustness(req: RobustnessRequest) -> dict:
+    ticker_a = req.ticker_a.upper().strip()
+    ticker_b = req.ticker_b.upper().strip()
+
+    if ticker_a == ticker_b:
+        raise HTTPException(400, "ticker_a and ticker_b must be different")
+
+    try:
+        params = PairsParams(
+            zscore_lookback=req.zscore_lookback,
+            entry_z=req.entry_z,
+            exit_z=req.exit_z,
+            rolling_beta=req.rolling_beta,
+            beta_lookback=req.beta_lookback,
+            train_fraction=req.train_fraction,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+    config = BacktestConfig(
+        initial_capital=req.initial_capital,
+        transaction_cost=req.transaction_cost_bps / 10_000.0,
+        target_dollar_exposure=req.target_dollar_exposure,
+    )
+
+    loader = PriceLoader(cache_dir=str(CACHE_DIR))
+    try:
+        panel = loader.fetch([ticker_a, ticker_b], start=req.start, end=req.end)
+    except Exception as exc:
+        raise HTTPException(400, detail=f"Failed to fetch price data: {exc}") from exc
+
+    from src.data import align_pair
+    try:
+        price_a, price_b = align_pair(panel, ticker_a, ticker_b)
+    except Exception as exc:
+        raise HTTPException(400, detail=f"Failed to align prices: {exc}") from exc
+
+    # Run the baseline backtest to get trades for bootstrap
+    try:
+        base_run: PairRun = run_pair(panel, ticker_a, ticker_b, params, config,
+                                     cointegration_significance=None)
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Baseline backtest failed: {exc}") from exc
+
+    # ── 3 robustness dimensions ───────────────────────────────
+    try:
+        window_runs = random_window_test(
+            price_a, price_b, params, config,
+            n_simulations=req.n_window_sims,
+            window_years=req.window_years,
+        )
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Window test failed: {exc}") from exc
+
+    try:
+        bootstrap_runs = bootstrap_trades(
+            base_run.result.trades,
+            initial_capital=req.initial_capital,
+            n_simulations=req.n_bootstrap_sims,
+        )
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Bootstrap test failed: {exc}") from exc
+
+    try:
+        cost_runs = cost_sensitivity(
+            price_a, price_b, params, config,
+            cost_bps_range=sorted(set(req.cost_range_bps)),
+        )
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Cost sensitivity test failed: {exc}") from exc
+
+    summary   = rob_aggregate(window_runs, bootstrap_runs, cost_runs)
+    rob_score = compute_robustness_score(window_runs, bootstrap_runs, cost_runs)
+    insight   = generate_robustness_insight(
+        ticker_a, ticker_b, summary, rob_score,
+        req.n_window_sims, req.n_bootstrap_sims,
+    )
+
+    # Baseline metrics for context
+    base_metrics = {k: _safe(v) for k, v in base_run.summary.as_dict().items()}
+
+    return {
+        "ticker_a":         ticker_a,
+        "ticker_b":         ticker_b,
+        "robustness_score": rob_score,
+        "summary":          summary,
+        "window_runs":      window_runs,
+        "bootstrap_runs":   bootstrap_runs,
+        "cost_sensitivity": cost_runs,
+        "insight":          insight,
+        "baseline_metrics": base_metrics,
+        "params": {
+            "zscore_lookback": params.zscore_lookback,
+            "entry_z":         params.entry_z,
+            "exit_z":          params.exit_z,
+            "n_window_sims":   req.n_window_sims,
+            "window_years":    req.window_years,
+            "n_bootstrap_sims": req.n_bootstrap_sims,
+            "cost_range_bps":  sorted(set(req.cost_range_bps)),
+        },
+    }
