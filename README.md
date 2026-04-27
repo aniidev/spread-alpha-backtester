@@ -10,7 +10,7 @@ An interactive quantitative research dashboard built on top of the backtesting e
 
 ![Dashboard preview — dark quant terminal UI with KPI cards and interactive charts]
 
-**Features:**
+**Backtest tab**
 - Pair selection with preset pairs (MA/V, XOM/CVX, GLD/SLV, EWA/EWC, KO/PEP, HD/LOW) or custom tickers
 - Configurable strategy parameters (z-score lookback, entry/exit thresholds, capital, transaction costs)
 - 12 KPI performance cards with colour-coded thresholds
@@ -18,6 +18,12 @@ An interactive quantitative research dashboard built on top of the backtesting e
 - Auto-generated quantitative insight paragraph
 - Run history sidebar with one-click reload
 - CSV export for trade logs
+
+**Robustness Lab tab**
+- Monte Carlo stress-test across 3 orthogonal dimensions (see below)
+- Normalised 0–100 robustness score with semicircular SVG gauge
+- Sharpe distribution histogram, bootstrap return distribution, cost sensitivity dual-axis chart
+- Auto-generated robustness analysis paragraph with pass/fail indicators
 
 ### Running the dashboard
 
@@ -61,37 +67,45 @@ Open **http://localhost:5173** in your browser. The backend API is at **http://l
 ```
 statarb/
 ├── api/
-│   └── main.py                   # FastAPI backend — wraps the backtesting engine
+│   └── main.py                        # FastAPI backend — backtest + robustness endpoints
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx               # Root layout + state management
-│   │   ├── api/client.js         # Fetch wrapper for the backend
-│   │   ├── utils/format.js       # Number / date formatting utilities
+│   │   ├── App.jsx                    # Root layout, tab state, all async handlers
+│   │   ├── api/client.js              # Fetch wrapper for the backend
+│   │   ├── utils/format.js            # Number / date formatting utilities
 │   │   └── components/
-│   │       ├── PairSelector.jsx  # Strategy config form
-│   │       ├── KPICards.jsx      # Performance metric cards
-│   │       ├── InsightPanel.jsx  # Auto-generated quant analysis
+│   │       ├── PairSelector.jsx       # Strategy config form
+│   │       ├── KPICards.jsx           # Performance metric cards
+│   │       ├── InsightPanel.jsx       # Auto-generated quant analysis
 │   │       ├── EquityCurveChart.jsx
-│   │       ├── ZScoreChart.jsx   # Z-score with position shading
+│   │       ├── ZScoreChart.jsx        # Z-score with position shading
 │   │       ├── DrawdownChart.jsx
 │   │       ├── TradeHistogramChart.jsx
-│   │       ├── RunHistory.jsx    # Sidebar of past runs
-│   │       └── LoadingOverlay.jsx
+│   │       ├── RunHistory.jsx         # Sidebar of past runs
+│   │       ├── LoadingOverlay.jsx
+│   │       ├── RobustnessLab.jsx      # Robustness Lab tab container
+│   │       ├── RobustnessScoreGauge.jsx  # SVG semicircular score gauge
+│   │       ├── RobustnessSummaryCards.jsx
+│   │       ├── RobustnessInsightPanel.jsx
+│   │       ├── SharpeHistChart.jsx    # Sharpe distribution histogram
+│   │       ├── BootstrapReturnChart.jsx  # Bootstrap return distribution
+│   │       └── CostSensitivityChart.jsx  # Return & Sharpe vs transaction cost
 │   ├── package.json
 │   ├── tailwind.config.js
-│   └── vite.config.js            # Dev proxy → localhost:8000
-├── main.py                       # CLI entry point (standalone, no server needed)
+│   └── vite.config.js                 # Dev proxy → localhost:8000
+├── main.py                            # CLI entry point (standalone, no server needed)
 ├── requirements.txt
-├── start_dashboard.bat           # Windows one-click launcher
-├── start_dashboard.sh            # Mac/Linux one-click launcher
+├── start_dashboard.bat                # Windows one-click launcher
+├── start_dashboard.sh                 # Mac/Linux one-click launcher
 └── src/
-    ├── data/loader.py            # yfinance fetch, caching, alignment
-    ├── strategies/pairs_trading.py  # β estimation, spread, z-score, signals
-    ├── backtester/engine.py      # bar-by-bar simulator with txn costs
-    ├── metrics/performance.py    # Sharpe, drawdown, win rate, profit factor, ...
-    ├── utils/cointegration.py    # Engle–Granger test
-    ├── utils/visualization.py    # diagnostic & equity-curve plots (CLI only)
-    └── runner.py                 # end-to-end orchestration + grid search
+    ├── data/loader.py                 # yfinance fetch, caching, alignment
+    ├── strategies/pairs_trading.py    # β estimation, spread, z-score, signals
+    ├── backtester/engine.py           # bar-by-bar simulator with txn costs
+    ├── metrics/performance.py         # Sharpe, drawdown, win rate, profit factor, ...
+    ├── robustness.py                  # Monte Carlo / robustness testing engine
+    ├── utils/cointegration.py         # Engle–Granger test
+    ├── utils/visualization.py         # diagnostic & equity-curve plots (CLI only)
+    └── runner.py                      # end-to-end orchestration + grid search
 ```
 
 ---
@@ -147,6 +161,47 @@ For two cointegrated assets A and B:
 ## Performance metrics
 
 Total return · annualized return · annualized vol · annualized Sharpe · max drawdown · Calmar ratio · exposure fraction · trade count · win rate · avg trade return · avg winner/loser · profit factor · total transaction costs · cointegration p-value.
+
+---
+
+## Robustness Lab
+
+The **Robustness Lab** tab stress-tests the strategy across three orthogonal dimensions after a backtest is run.
+
+### 1. Random historical window sampling
+Samples N random contiguous sub-windows from the full price series and runs a complete backtest on each. Answers: *is the edge real, or was the chosen date range just lucky?*
+
+- Configurable window count (default 200) and window length (default 2 years)
+- Collects Sharpe ratio, return, drawdown, and win rate per window
+- Renders a colour-coded Sharpe distribution histogram with mean marker
+
+### 2. Bootstrap trade-return resampling
+Resamples the realized round-trip trade returns (with replacement) N times. Answers: *how much of the P&L depends on the sequence of trades rather than the underlying edge?*
+
+- Configurable iteration count (default 500)
+- Reports 95% confidence interval for cumulative return
+- Renders a return distribution histogram
+
+### 3. Transaction cost sensitivity
+Re-runs the strategy across a sweep of cost levels (0 → 100 bps) with signals computed once. Answers: *at what cost does alpha vanish?*
+
+- Dual-axis line chart showing return (left axis) and Sharpe (right axis) vs cost
+- Highlights the strategy's actual base cost level
+
+### Robustness score
+A normalised 0–100 composite score computed from four sub-dimensions:
+
+| Dimension | Weight | Criteria |
+|---|---|---|
+| Window positivity | 40 pts | Fraction of windows with positive Sharpe |
+| Sharpe stability | 30 pts | Low coefficient of variation across windows |
+| Bootstrap positivity | 20 pts | Fraction of bootstrap runs with positive return |
+| Cost resilience | 10 pts | Strategy profitable at ≥ 20 bps |
+
+Displayed as a colour-coded SVG semicircular gauge (green ≥ 70 · amber ≥ 40 · red < 40).
+
+### API endpoint
+`POST /api/robustness` — accepts the same strategy parameters as `/api/backtest` plus `n_window_sims`, `window_years`, `n_bootstrap_sims`, and `cost_range_bps`.
 
 ---
 

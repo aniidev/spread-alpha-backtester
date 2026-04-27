@@ -35,6 +35,8 @@ from src.robustness import (
     generate_robustness_insight,
     random_window_test,
 )
+from src.pair_screener import screen_pairs
+from src.universes import UNIVERSE_NAMES, get_universe
 
 app = FastAPI(title="Spread Alpha Backtester API", version="1.0.0")
 
@@ -523,4 +525,113 @@ def run_robustness(req: RobustnessRequest) -> dict:
             "n_bootstrap_sims": req.n_bootstrap_sims,
             "cost_range_bps":  sorted(set(req.cost_range_bps)),
         },
+    }
+
+
+# ── Pair screener endpoint ────────────────────────────────────
+
+class ScreenerRequest(BaseModel):
+    universe: Optional[str] = None          # named universe (SP500, TECH, …)
+    tickers:  Optional[list[str]] = None    # custom ticker list
+    start: str = "2020-01-01"
+    end:   str = "2024-12-31"
+    min_correlation:   float = Field(0.6,  ge=0.0, le=1.0)
+    max_pairs:         int   = Field(300,  ge=10,  le=2000)
+    top_k:             int   = Field(20,   ge=1,   le=100)
+    run_backtest:      bool  = True
+    n_workers:         int   = Field(4,    ge=1,   le=16)
+    # Strategy params for mini-backtest
+    zscore_lookback:   int   = Field(60,   ge=5,   le=252)
+    entry_z:           float = Field(2.0,  gt=0,   le=5)
+    exit_z:            float = Field(0.0,  ge=0,   lt=5)
+    initial_capital:   float = Field(100_000.0, gt=0)
+    transaction_cost_bps: float = Field(10.0, ge=0, le=100)
+
+
+@app.get("/api/screener/universes")
+def list_universes() -> dict:
+    """Return available named universes and their ticker counts."""
+    from src.universes import UNIVERSES
+    return {
+        name: {"ticker_count": len(tickers), "tickers": tickers}
+        for name, tickers in UNIVERSES.items()
+    }
+
+
+@app.post("/api/screener")
+def run_screener(req: ScreenerRequest) -> dict:
+    # Resolve tickers
+    if req.universe:
+        try:
+            tickers = get_universe(req.universe)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+    elif req.tickers:
+        tickers = [t.upper().strip() for t in req.tickers if t.strip()]
+    else:
+        raise HTTPException(400, detail="Provide either 'universe' or 'tickers'")
+
+    if len(tickers) < 2:
+        raise HTTPException(400, detail="Need at least 2 valid tickers")
+
+    try:
+        params = PairsParams(
+            zscore_lookback=req.zscore_lookback,
+            entry_z=req.entry_z,
+            exit_z=req.exit_z,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+    config = BacktestConfig(
+        initial_capital=req.initial_capital,
+        transaction_cost=req.transaction_cost_bps / 10_000.0,
+    )
+
+    loader = PriceLoader(cache_dir=str(CACHE_DIR))
+
+    try:
+        df = screen_pairs(
+            tickers,
+            start=req.start,
+            end=req.end,
+            params=params,
+            config=config,
+            loader=loader,
+            min_correlation=req.min_correlation,
+            max_pairs=req.max_pairs,
+            run_backtest=req.run_backtest,
+            n_workers=req.n_workers,
+            top_k=req.top_k,
+        )
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Screener error: {exc}") from exc
+
+    if df.empty:
+        return {
+            "universe": req.universe or "custom",
+            "tickers_screened": len(tickers),
+            "pairs_found": 0,
+            "results": [],
+        }
+
+    # Convert DataFrame to JSON-safe list
+    records = []
+    for row in df.itertuples(index=False):
+        rec: dict = {}
+        for col in df.columns:
+            val = getattr(row, col)
+            if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                rec[col] = None
+            elif isinstance(val, (float, int, str, bool)) or val is None:
+                rec[col] = val
+            else:
+                rec[col] = str(val)
+        records.append(rec)
+
+    return {
+        "universe": req.universe or "custom",
+        "tickers_screened": len(tickers),
+        "pairs_found": len(records),
+        "results": records,
     }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Play, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
 
 const PRESET_PAIRS = [
@@ -50,9 +50,17 @@ function NumInput({ value, onChange, step = 1, min, max }) {
   )
 }
 
-export default function PairSelector({ onRun, loading }) {
+export default function PairSelector({ onRun, loading, pendingPair, onPendingConsumed }) {
   const [form, setForm]           = useState(DEFAULT_FORM)
   const [showAdvanced, setShowAdv] = useState(false)
+
+  // When the discovery tab fires a pair, auto-fill and immediately run
+  useEffect(() => {
+    if (!pendingPair || loading) return
+    setForm(f => ({ ...f, ticker_a: pendingPair.ticker_a, ticker_b: pendingPair.ticker_b }))
+    onRun({ ...DEFAULT_FORM, ticker_a: pendingPair.ticker_a, ticker_b: pendingPair.ticker_b })
+    onPendingConsumed?.()
+  }, [pendingPair]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }))
 

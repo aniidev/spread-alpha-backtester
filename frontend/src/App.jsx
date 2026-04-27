@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Activity, BarChart2, FlaskConical } from 'lucide-react'
+import { Activity, BarChart2, FlaskConical, Search } from 'lucide-react'
 import { api } from './api/client.js'
 import PairSelector from './components/PairSelector.jsx'
 import RunHistory from './components/RunHistory.jsx'
@@ -11,6 +11,7 @@ import DrawdownChart from './components/DrawdownChart.jsx'
 import TradeHistogramChart from './components/TradeHistogramChart.jsx'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import RobustnessLab from './components/RobustnessLab.jsx'
+import PairDiscovery from './components/PairDiscovery.jsx'
 
 // ── Empty state ───────────────────────────────────────────────
 
@@ -116,8 +117,9 @@ function exportTradesToCsv(result) {
 // ── Tab nav ───────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'backtest',   label: 'Backtest',      Icon: BarChart2    },
-  { id: 'robustness', label: 'Robustness Lab', Icon: FlaskConical },
+  { id: 'backtest',   label: 'Backtest',       Icon: BarChart2    },
+  { id: 'robustness', label: 'Robustness Lab',  Icon: FlaskConical },
+  { id: 'discovery',  label: 'Pair Discovery',  Icon: Search       },
 ]
 
 function TabNav({ active, onChange }) {
@@ -188,12 +190,14 @@ export default function App() {
   // robustness state — lives here so it survives tab switches
   const [robResult, setRobResult] = useState(null)
   const [robError, setRobError]   = useState(null)
+  // pair pre-filled from the discovery screener
+  const [pendingPair, setPendingPair] = useState(null)
 
   const [loading, setLoading]     = useState(false)
   const [loadingMsg, setLoadingMsg] = useState(null)
   const [error, setError]         = useState(null)
   const [history, setHistory]     = useState([])
-  const [activeTab, setActiveTab] = useState('backtest')
+  const [activeTab, setActiveTab] = useState('discovery')
 
   const refreshHistory = useCallback(async () => {
     try { setHistory(await api.getHistory()) } catch { /* non-fatal */ }
@@ -282,7 +286,12 @@ export default function App() {
         {/* Left sidebar */}
         <aside className="flex-none w-72 xl:w-80 border-r border-q-border bg-q-surface/30 flex flex-col overflow-y-auto">
           <div className="p-4 border-b border-q-border">
-            <PairSelector onRun={handleRun} loading={loading} />
+            <PairSelector
+              onRun={handleRun}
+              loading={loading}
+              pendingPair={pendingPair}
+              onPendingConsumed={() => setPendingPair(null)}
+            />
           </div>
           <div className="flex-1 p-4 overflow-y-auto">
             <RunHistory
@@ -302,23 +311,35 @@ export default function App() {
             </div>
           )}
 
-          {result && <TabNav active={activeTab} onChange={setActiveTab} />}
+          {/* Tab nav always visible */}
+          <TabNav active={activeTab} onChange={setActiveTab} />
 
           <main className="flex-1 overflow-y-auto">
-            {!result ? (
-              <EmptyState />
-            ) : activeTab === 'backtest' ? (
-              <BacktestView
-                result={result}
-                onExport={() => exportTradesToCsv(result)}
+            {activeTab === 'discovery' ? (
+              <PairDiscovery
+                loading={loading}
+                onRunBacktest={(tickerA, tickerB) => {
+                  // Pre-fill doesn't exist as state — we trigger a run directly
+                  // by switching to backtest tab; the PairSelector handles its own form
+                  setActiveTab('backtest')
+                  // Store pending pair so PairSelector can pick it up
+                  setPendingPair({ ticker_a: tickerA, ticker_b: tickerB })
+                }}
               />
-            ) : (
+            ) : activeTab === 'robustness' ? (
               <RobustnessLab
                 backtestResult={result}
                 robResult={robResult}
                 robError={robError}
                 onRun={handleRunRobustness}
                 loading={loading}
+              />
+            ) : !result ? (
+              <EmptyState />
+            ) : (
+              <BacktestView
+                result={result}
+                onExport={() => exportTradesToCsv(result)}
               />
             )}
           </main>
