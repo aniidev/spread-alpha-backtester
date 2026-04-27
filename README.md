@@ -1,255 +1,259 @@
 # spread-alpha-backtester
 
-Production-style **statistical arbitrage** (pairs trading) backtesting framework with a full-stack interactive web dashboard. Computes a hedge ratio via OLS, models the spread as a mean-reverting process, and simulates a dollar-neutral β-hedged portfolio bar-by-bar with realistic transaction costs and no lookahead bias.
+Production-style **statistical arbitrage research platform** for discovering, validating, and stress-testing mean-reversion trading opportunities. Combines a full pairs-trading backtesting engine, Monte Carlo robustness analysis suite, and an automated alpha discovery pipeline inside an interactive quantitative dashboard.
 
 ---
 
 ## Dashboard
 
-An interactive quantitative research dashboard built on top of the backtesting engine.
+A full-stack interactive quantitative research dashboard built on top of the backtesting engine.
 
-![Dashboard preview — dark quant terminal UI with KPI cards and interactive charts]
-
-**Backtest tab**
-- Pair selection with preset pairs (MA/V, XOM/CVX, GLD/SLV, EWA/EWC, KO/PEP, HD/LOW) or custom tickers
+### **Backtest Tab**
+- Manual pair selection with preset pairs or custom tickers
 - Configurable strategy parameters (z-score lookback, entry/exit thresholds, capital, transaction costs)
-- 12 KPI performance cards with colour-coded thresholds
-- Interactive equity curve, z-score with position shading, drawdown, and trade return histogram
+- 12 KPI performance cards with color-coded thresholds
+- Interactive equity curve, z-score with position shading, drawdown, and trade-return histogram
 - Auto-generated quantitative insight paragraph
 - Run history sidebar with one-click reload
 - CSV export for trade logs
 
-**Robustness Lab tab**
-- Monte Carlo stress-test across 3 orthogonal dimensions (see below)
-- Normalised 0–100 robustness score with semicircular SVG gauge
+### **Robustness Lab Tab**
+- Monte Carlo stress-testing across 3 orthogonal dimensions
+- Normalized 0–100 robustness score with semicircular SVG gauge
 - Sharpe distribution histogram, bootstrap return distribution, cost sensitivity dual-axis chart
 - Auto-generated robustness analysis paragraph with pass/fail indicators
 
-### Running the dashboard
+### **Pair Discovery Tab**
+- Automated scanning across preset universes or custom ticker lists
+- Correlation prefilter + parallel pairwise statistical evaluation
+- Cointegration, half-life, hedge-ratio stability, Sharpe, drawdown, and composite alpha score
+- Ranked candidate table with one-click transition into full backtest
+- CSV export of discovered pair opportunities
 
-**Prerequisites**
+---
+
+## Running the Dashboard
+
+### Prerequisites
 
 ```bash
-pip install -r requirements.txt   # Python backend
-cd frontend && npm install        # Node frontend
+pip install -r requirements.txt
+cd frontend && npm install
 ```
 
-**Start both servers (Windows)**
+### Start both servers (Windows)
 
 ```bat
 start_dashboard.bat
 ```
 
-**Start both servers (Mac / Linux)**
+### Start both servers (Mac / Linux)
 
 ```bash
 bash start_dashboard.sh
 ```
 
-**Or manually in two terminals:**
+### Or manually in two terminals
 
 ```bash
-# Terminal 1 — API (project root)
+# Terminal 1 - API
 uvicorn api.main:app --reload --port 8000
 
-# Terminal 2 — UI
+# Terminal 2 - Frontend
 cd frontend && npm run dev
 ```
 
-Open **http://localhost:5173** in your browser. The backend API is at **http://localhost:8000**.
+Open **http://localhost:5173** in your browser.
 
-> **First run** downloads price data from Yahoo Finance (~10–20 s). Subsequent runs for the same pair and date range are fast because prices are cached under `results/cache/`.
-
----
-
-## Project layout
-
-```
-statarb/
-├── api/
-│   └── main.py                        # FastAPI backend — backtest + robustness endpoints
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx                    # Root layout, tab state, all async handlers
-│   │   ├── api/client.js              # Fetch wrapper for the backend
-│   │   ├── utils/format.js            # Number / date formatting utilities
-│   │   └── components/
-│   │       ├── PairSelector.jsx       # Strategy config form
-│   │       ├── KPICards.jsx           # Performance metric cards
-│   │       ├── InsightPanel.jsx       # Auto-generated quant analysis
-│   │       ├── EquityCurveChart.jsx
-│   │       ├── ZScoreChart.jsx        # Z-score with position shading
-│   │       ├── DrawdownChart.jsx
-│   │       ├── TradeHistogramChart.jsx
-│   │       ├── RunHistory.jsx         # Sidebar of past runs
-│   │       ├── LoadingOverlay.jsx
-│   │       ├── RobustnessLab.jsx      # Robustness Lab tab container
-│   │       ├── RobustnessScoreGauge.jsx  # SVG semicircular score gauge
-│   │       ├── RobustnessSummaryCards.jsx
-│   │       ├── RobustnessInsightPanel.jsx
-│   │       ├── SharpeHistChart.jsx    # Sharpe distribution histogram
-│   │       ├── BootstrapReturnChart.jsx  # Bootstrap return distribution
-│   │       └── CostSensitivityChart.jsx  # Return & Sharpe vs transaction cost
-│   ├── package.json
-│   ├── tailwind.config.js
-│   └── vite.config.js                 # Dev proxy → localhost:8000
-├── main.py                            # CLI entry point (standalone, no server needed)
-├── requirements.txt
-├── start_dashboard.bat                # Windows one-click launcher
-├── start_dashboard.sh                 # Mac/Linux one-click launcher
-└── src/
-    ├── data/loader.py                 # yfinance fetch, caching, alignment
-    ├── strategies/pairs_trading.py    # β estimation, spread, z-score, signals
-    ├── backtester/engine.py           # bar-by-bar simulator with txn costs
-    ├── metrics/performance.py         # Sharpe, drawdown, win rate, profit factor, ...
-    ├── robustness.py                  # Monte Carlo / robustness testing engine
-    ├── utils/cointegration.py         # Engle–Granger test
-    ├── utils/visualization.py         # diagnostic & equity-curve plots (CLI only)
-    └── runner.py                      # end-to-end orchestration + grid search
-```
+> First run downloads Yahoo Finance data and caches it under `results/cache/`.
 
 ---
 
-## CLI (no server required)
-
-The original command-line interface still works independently.
+## Project Layout
 
 ```bash
-pip install -r requirements.txt
+statarb/
+├── api/
+│   └── main.py                        # FastAPI backend - backtest, robustness, screener endpoints
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── api/client.js
+│   │   ├── utils/format.js
+│   │   └── components/
+│   │       ├── PairSelector.jsx
+│   │       ├── KPICards.jsx
+│   │       ├── InsightPanel.jsx
+│   │       ├── EquityCurveChart.jsx
+│   │       ├── ZScoreChart.jsx
+│   │       ├── DrawdownChart.jsx
+│   │       ├── TradeHistogramChart.jsx
+│   │       ├── RunHistory.jsx
+│   │       ├── RobustnessLab.jsx
+│   │       ├── RobustnessScoreGauge.jsx
+│   │       ├── RobustnessSummaryCards.jsx
+│   │       ├── RobustnessInsightPanel.jsx
+│   │       ├── SharpeHistChart.jsx
+│   │       ├── BootstrapReturnChart.jsx
+│   │       ├── CostSensitivityChart.jsx
+│   │       └── PairDiscovery.jsx
+├── main.py
+├── requirements.txt
+├── start_dashboard.bat
+├── start_dashboard.sh
+└── src/
+    ├── data/loader.py
+    ├── strategies/pairs_trading.py
+    ├── backtester/engine.py
+    ├── metrics/performance.py
+    ├── robustness.py
+    ├── universes.py
+    ├── pair_screener.py
+    ├── utils/cointegration.py
+    ├── utils/visualization.py
+    └── runner.py
+```
 
-# Single pair, default parameters
-python main.py --pairs KO,PEP --start 2018-01-01 --end 2024-12-31
+---
 
-# Multiple pairs with rolling β
-python main.py --pairs KO,PEP GLD,SLV XOM,CVX --rolling-beta
+## CLI Modes
 
-# Grid search — sweep z-score lookback × entry threshold
-python main.py --pairs KO,PEP --grid \
+### Standard Backtest
+
+```bash
+python main.py --pairs MA,V --start 2020-01-01 --end 2024-12-31
+```
+
+### Rolling Beta Backtest
+
+```bash
+python main.py --pairs MA,V --rolling-beta --beta-lookback 60
+```
+
+### Parameter Grid Search
+
+```bash
+python main.py --pairs MA,V --grid \
   --grid-lookbacks 30,60,90 --grid-entries 1.5,2.0,2.5 --grid-exits 0.0,0.5
 ```
 
-CLI outputs land in `results/<TICKER_A>_<TICKER_B>/`:
+### Automated Pair Discovery
 
-| File | Contents |
-|---|---|
-| `portfolio.csv` | Per-bar cash, positions, equity, costs, returns |
-| `trades.csv` | Round-trip trade log with entry/exit prices and PnL |
-| `summary.csv` | Headline performance metrics |
-| `diagnostics.png` | Prices, spread, z-score with entry/exit bands |
-| `equity.png` | Equity curve and rolling drawdown |
+```bash
+python main.py --pair-screener --screen-universe SP500 --top-k 10
+python main.py --pair-screener --screen-universe ENERGY --top-k 10 --run-top 3
+python main.py --pair-screener --tickers AAPL,MSFT,GOOGL,NVDA,AMD --top-k 5
+```
 
-A combined `results/summary.csv` aggregates all pairs.
+Results save to `results/pair_screener.csv`.
 
 ---
 
-## Strategy
+## Core Strategy Engine
 
-For two cointegrated assets A and B:
+For two assets A and B:
 
-1. **Hedge ratio.** Static OLS β over the first `--train-fraction` of the sample, *or* rolling OLS over `--beta-lookback` bars (`--rolling-beta`).
-2. **Spread.** `S_t = P^A_t − β · P^B_t`
-3. **Z-score.** `(S_t − μ_t) / σ_t` over a trailing `--zscore-lookback` window.
-4. **Signal state machine.**
-   - Flat → **long spread** when `z < −entry_z`
-   - Flat → **short spread** when `z > +entry_z`
-   - Open → **flat** when `|z| ≤ exit_z`
-5. **Sizing.** Long leg sized to `--exposure` dollars; short leg is β-neutral.
-6. **Execution.** Signals are shifted one bar before entering the simulator (no lookahead). Transaction costs are charged on the absolute notional traded per leg.
-
----
-
-## Performance metrics
-
-Total return · annualized return · annualized vol · annualized Sharpe · max drawdown · Calmar ratio · exposure fraction · trade count · win rate · avg trade return · avg winner/loser · profit factor · total transaction costs · cointegration p-value.
+1. **Hedge Ratio** - static or rolling OLS β estimation
+2. **Spread Construction** - `S_t = P^A_t − βP^B_t`
+3. **Signal Generation** - rolling z-score mean-reversion thresholds
+4. **State Machine Execution**
+   - long spread when `z < -entry_z`
+   - short spread when `z > entry_z`
+   - flatten when `|z| ≤ exit_z`
+5. **Dollar-Neutral Sizing** with β-adjusted hedge leg
+6. **One-Bar Shifted Execution** to remove lookahead bias
+7. **Realistic Transaction Costs** charged on both legs
 
 ---
 
 ## Robustness Lab
 
-The **Robustness Lab** tab stress-tests the strategy across three orthogonal dimensions after a backtest is run.
+The robustness engine stress-tests every strategy run across three dimensions:
 
-### 1. Random historical window sampling
-Samples N random contiguous sub-windows from the full price series and runs a complete backtest on each. Answers: *is the edge real, or was the chosen date range just lucky?*
+### 1. Random Historical Window Sampling
+Runs hundreds of full backtests across random contiguous subperiods to test sample dependence.
 
-- Configurable window count (default 200) and window length (default 2 years)
-- Collects Sharpe ratio, return, drawdown, and win rate per window
-- Renders a colour-coded Sharpe distribution histogram with mean marker
+### 2. Bootstrap Trade-Return Resampling
+Resamples realized trade outcomes with replacement to estimate confidence intervals on cumulative PnL.
 
-### 2. Bootstrap trade-return resampling
-Resamples the realized round-trip trade returns (with replacement) N times. Answers: *how much of the P&L depends on the sequence of trades rather than the underlying edge?*
+### 3. Transaction Cost Sensitivity
+Sweeps execution cost from 0 to 100 bps and measures Sharpe/return degradation.
 
-- Configurable iteration count (default 500)
-- Reports 95% confidence interval for cumulative return
-- Renders a return distribution histogram
-
-### 3. Transaction cost sensitivity
-Re-runs the strategy across a sweep of cost levels (0 → 100 bps) with signals computed once. Answers: *at what cost does alpha vanish?*
-
-- Dual-axis line chart showing return (left axis) and Sharpe (right axis) vs cost
-- Highlights the strategy's actual base cost level
-
-### Robustness score
-A normalised 0–100 composite score computed from four sub-dimensions:
-
-| Dimension | Weight | Criteria |
-|---|---|---|
-| Window positivity | 40 pts | Fraction of windows with positive Sharpe |
-| Sharpe stability | 30 pts | Low coefficient of variation across windows |
-| Bootstrap positivity | 20 pts | Fraction of bootstrap runs with positive return |
-| Cost resilience | 10 pts | Strategy profitable at ≥ 20 bps |
-
-Displayed as a colour-coded SVG semicircular gauge (green ≥ 70 · amber ≥ 40 · red < 40).
-
-### API endpoint
-`POST /api/robustness` — accepts the same strategy parameters as `/api/backtest` plus `n_window_sims`, `window_years`, `n_bootstrap_sims`, and `cost_range_bps`.
+### Robustness Score
+Composite 0–100 score based on:
+- window positivity
+- Sharpe stability
+- bootstrap profitability
+- cost resilience
 
 ---
 
-## Cointegration filter
+## Pair Discovery Engine
 
-Each pair is tested with **Engle–Granger** (`statsmodels.tsa.stattools.coint`). The t-statistic, p-value, and pass/fail at `--cointegration-alpha` are displayed in the dashboard insight panel and CLI summary. Disable in the CLI with `--no-cointegration`.
+The Pair Discovery module transforms the platform from a manual tester into an automated alpha search system.
 
----
+### Pipeline
 
-## Sample results
+1. Load and cache historical prices for all tickers in a universe
+2. Compute pairwise return correlations
+3. Keep only highly correlated candidates above a minimum threshold
+4. Evaluate surviving pairs in parallel:
+   - Engle–Granger cointegration test
+   - Static OLS hedge ratio
+   - Ornstein-Uhlenbeck half-life approximation
+   - Rolling hedge-ratio stability
+   - Optional mini-backtest (Sharpe, return, drawdown)
+5. Compute a composite alpha score
+6. Rank and export the strongest opportunities
 
-| Pair    | Cointegrated | Return | Sharpe |
-|---------|-------------|--------|--------|
-| GLD/SLV | No          | −20%   | −0.22  |
-| XOM/CVX | No          | +67%   | 0.52   |
-| MA/V    | Yes         | +22%   | 0.37   |
-| EWA/EWC | Yes         | +5%    | 0.12   |
+### Composite Alpha Score
 
----
+The screener ranks pairs by:
 
-## Insights
+- cointegration significance
+- backtest Sharpe ratio
+- drawdown penalty
+- hedge-ratio stability
 
-- Cointegration is a strong but not sufficient condition for profitability. MA/V showed stable performance under cointegration; EWA/EWC confirmed that statistical linkage alone does not guarantee strong returns.
-- Non-cointegrated pairs (GLD/SLV) consistently underperformed, validating the importance of testing mean-reversion assumptions before trading.
-- Some non-cointegrated pairs (XOM/CVX) still generated positive returns, suggesting short-term correlation and sector dynamics can temporarily support mean reversion.
-- Transaction costs had a material impact across all pairs — realistic execution modeling is essential.
-- Strategy performance is highly sensitive to pair selection; asset selection is as important as signal design.
-
----
-
-## Realism notes
-
-- Prices are auto-adjusted (splits + dividends) via `yfinance(auto_adjust=True)`.
-- Inner-joined on dates so both legs always trade on the same bars.
-- All signals are computed at bar `t` and acted on at `t+1`'s close (one-bar shift).
-- Rolling-β bars before the warm-up window do not trade.
-- Transaction costs apply on every share that changes hands, both legs.
-- Open positions are marked-to-market and force-closed at the end of the sample.
+to prioritize statistically attractive and structurally stable mean-reversion candidates.
 
 ---
 
-## Tech stack
+## Performance Metrics
+
+Total return · annualized return · annualized volatility · Sharpe ratio · max drawdown · Calmar ratio · exposure fraction · win rate · profit factor · trade count · transaction costs · cointegration p-value · half-life · stability score.
+
+---
+
+## Sample Research Findings
+
+| Pair    | Cointegrated | Return | Sharpe | Robustness |
+|---------|-------------|--------|--------|------------|
+| GLD/SLV | No          | -15%   | -0.35  | 27/100 |
+| XOM/CVX | No          | +14%   | 0.35   | 41/100 |
+| MA/V    | Yes         | +1.5%  | 0.08   | 58/100 |
+| Top screened candidates | Mixed | Ranked automatically | Ranked automatically | Ranked automatically |
+
+---
+
+## Realism Notes
+
+- Auto-adjusted split/dividend prices via `yfinance(auto_adjust=True)`
+- Date inner-join alignment on both legs
+- All signals computed at bar `t`, executed at `t+1`
+- Rolling β warm-up protection
+- Costs charged on every notional turnover
+- Open positions force-closed at sample end
+
+---
+
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Backtesting engine | Python · pandas · NumPy · statsmodels · yfinance |
-| API server | FastAPI · uvicorn · pydantic |
-| UI framework | React 18 · Vite |
-| Styling | Tailwind CSS 3 |
+| Quant Engine | Python, pandas, NumPy, statsmodels, yfinance |
+| API Server | FastAPI, uvicorn, pydantic |
+| Frontend | React 18, Vite |
+| Styling | Tailwind CSS |
 | Charts | Recharts |
-| Icons | Lucide React |
+| Concurrency | ThreadPoolExecutor |
