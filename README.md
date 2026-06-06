@@ -1,6 +1,6 @@
 # spread-alpha-backtester
 
-Production-style **statistical arbitrage research platform** for discovering, validating, and stress-testing mean-reversion trading opportunities. Combines a full pairs-trading backtesting engine, Monte Carlo robustness analysis suite, and an automated alpha discovery pipeline inside an interactive quantitative dashboard.
+Production-style **statistical arbitrage research platform** for discovering, validating, and stress-testing mean-reversion trading opportunities. Combines a full pairs-trading backtesting engine, Monte Carlo robustness analysis suite, an automated alpha discovery pipeline, and an ML signal-research layer inside an interactive quantitative dashboard.
 
 ---
 
@@ -29,6 +29,15 @@ A full-stack interactive quantitative research dashboard built on top of the bac
 - Cointegration, half-life, hedge-ratio stability, Sharpe, drawdown, and composite alpha score
 - Ranked candidate table with one-click transition into full backtest
 - CSV export of discovered pair opportunities
+
+### **ML Signals Tab**
+- sklearn classifiers (Logistic Regression, Gradient Boosting, Random Forest) trained on engineered spread features
+- Leak-audited train/test pipeline with strict no-lookahead guards
+- Test-set classification metrics (accuracy, precision, recall, F1, AUC-ROC), feature importances, and ROC curve
+- Probability calibration panel (predicted-probability histogram + reliability curve) to verify honest, calibrated probabilities
+- Naive causal baseline comparison: model AUC vs a zero-parameter `-|z[t]|` score, with the **information-beyond-z-score** delta surfaced as the headline metric
+- Side-by-side ML vs z-score baseline backtest across all 12 KPIs
+- Probability-threshold sweep showing Sharpe vs long threshold against the baseline reference line
 
 ---
 
@@ -74,7 +83,7 @@ Open **http://localhost:5173** in your browser.
 ```bash
 statarb/
 ├── api/
-│   └── main.py                        # FastAPI backend - backtest, robustness, screener endpoints
+│   └── main.py                        # FastAPI backend - backtest, robustness, screener, ML endpoints
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx
@@ -96,7 +105,10 @@ statarb/
 │   │       ├── SharpeHistChart.jsx
 │   │       ├── BootstrapReturnChart.jsx
 │   │       ├── CostSensitivityChart.jsx
-│   │       └── PairDiscovery.jsx
+│   │       ├── PairDiscovery.jsx
+│   │       ├── MLSignals.jsx
+│   │       ├── FeatureImportanceChart.jsx
+│   │       └── ROCCurveChart.jsx
 ├── main.py
 ├── requirements.txt
 ├── start_dashboard.bat
@@ -109,6 +121,9 @@ statarb/
     ├── robustness.py
     ├── universes.py
     ├── pair_screener.py
+    ├── ml/
+    │   ├── signal_model.py            # feature engineering, leak-audited training, calibration
+    │   └── ml_backtest.py             # ML-vs-baseline backtest, threshold sweep
     ├── utils/cointegration.py
     ├── utils/visualization.py
     └── runner.py
@@ -219,9 +234,47 @@ to prioritize statistically attractive and structurally stable mean-reversion ca
 
 ---
 
+## ML Signal Layer
+
+The ML Signals module trains sklearn classifiers to predict spread mean-reversion and benchmarks them honestly against the rule-based z-score strategy. It is built as a research instrument, not a profit claim: the goal is to measure whether a model adds information beyond the z-score, with the data leakage and transaction-cost traps that sink most ML-in-finance projects explicitly controlled for.
+
+### Features
+
+All computed using only bars up to `t` (no lookahead):
+- z-score, z-score lag-1, z-score lag-5
+- spread momentum (5-bar, 10-bar)
+- rolling volatility ratio
+- spread RSI(14)
+- expanding-window half-life estimate (past bars only)
+
+### No-Lookahead Guards
+
+- Every feature at bar `t` uses only data `<= t`
+- Target uses only forward bars `t+1 … t+N`, with no overlap into the feature window
+- Time-ordered train/test split (no shuffle); scaler fit on train only, then applied to test
+- Half-life is an expanding estimate, never fit on the full series
+
+### Calibration
+
+A predicted-probability histogram and reliability curve verify the model is honest: a leaking model piles probability mass at 0 and 1 and its reliability dots leave the diagonal, while a calibrated model spreads its mass and tracks the identity line (predicted probability ≈ actual reversion rate).
+
+### Naive Baseline Comparison
+
+Every run reports the AUC of a zero-parameter causal score, `-|z[t]|`, alongside the model AUC. The headline metric is `model_AUC − baseline_AUC`: positive means the model adds information beyond the z-score; near zero or negative means it does not.
+
+### Threshold Sweep
+
+Sweeps the long/short probability thresholds and runs the cost-aware backtester at each, plotting ML Sharpe against the baseline reference line to test whether any operating point beats the rule-based strategy net of transaction costs.
+
+### Key Finding
+
+On MA/V, the classifier reaches a respectable **0.84 test AUC**, but a parameter-free `-|z[t]|` baseline scores **0.92** — higher than the model. The z-score is highly persistent (lag-1 autocorrelation ≈ 0.94), so "will the spread revert within N bars" is mechanically forecastable from today's `|z|`. The model is largely relearning the baseline's own logic while overtrading (≈140 trades vs the baseline's ≈20), and transaction costs drag its Sharpe negative. **High classification accuracy does not translate to PnL.** The genuinely hard problem is predicting the *residual* reversion beyond what `|z|` already implies, which is a target-design problem rather than a modeling one.
+
+---
+
 ## Performance Metrics
 
-Total return · annualized return · annualized volatility · Sharpe ratio · max drawdown · Calmar ratio · exposure fraction · win rate · profit factor · trade count · transaction costs · cointegration p-value · half-life · stability score.
+Total return · annualized return · annualized volatility · Sharpe ratio · max drawdown · Calmar ratio · exposure fraction · win rate · profit factor · trade count · transaction costs · cointegration p-value · half-life · stability score · classification AUC-ROC · model-minus-baseline AUC delta.
 
 ---
 
@@ -234,6 +287,16 @@ Total return · annualized return · annualized volatility · Sharpe ratio · ma
 | MA/V    | Yes         | +1.5%  | 0.08   | 58/100 |
 | Top screened candidates | Mixed | Ranked automatically | Ranked automatically | Ranked automatically |
 
+### ML vs Baseline (MA/V, Gradient Boosting)
+
+| Strategy | Test AUC | Sharpe | Return | Trades | Costs |
+|----------|----------|--------|--------|--------|-------|
+| z-score baseline | — | 0.23 | +8.5% | 21 | $9.5k |
+| ML signals | 0.84 | -0.63 | -21.2% | 139 | $57.2k |
+| `-|z[t]|` naive baseline | 0.92 | — | — | — | — |
+
+The naive baseline out-AUCs the model and the ML strategy loses net of costs — the documented takeaway is that predictive accuracy and execution-aware profitability are different problems.
+
 ---
 
 ## Realism Notes
@@ -244,6 +307,7 @@ Total return · annualized return · annualized volatility · Sharpe ratio · ma
 - Rolling β warm-up protection
 - Costs charged on every notional turnover
 - Open positions force-closed at sample end
+- ML pipeline: train-only scaler fit, forward-only targets, expanding-window half-life
 
 ---
 
@@ -252,6 +316,7 @@ Total return · annualized return · annualized volatility · Sharpe ratio · ma
 | Layer | Technology |
 |---|---|
 | Quant Engine | Python, pandas, NumPy, statsmodels, yfinance |
+| ML | scikit-learn |
 | API Server | FastAPI, uvicorn, pydantic |
 | Frontend | React 18, Vite |
 | Styling | Tailwind CSS |
