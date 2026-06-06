@@ -37,6 +37,12 @@ from src.robustness import (
 )
 from src.pair_screener import screen_pairs
 from src.universes import UNIVERSE_NAMES, get_universe
+from src.ml import (
+    DEFAULT_THRESHOLD_GRID,
+    FEATURE_COLUMNS,
+    run_ml_backtest,
+    threshold_sweep,
+)
 
 app = FastAPI(title="Spread Alpha Backtester API", version="1.0.0")
 
@@ -634,4 +640,227 @@ def run_screener(req: ScreenerRequest) -> dict:
         "tickers_screened": len(tickers),
         "pairs_found": len(records),
         "results": records,
+    }
+
+
+# ── ML signals endpoint ───────────────────────────────────────
+
+class MLSignalsRequest(BaseModel):
+    ticker_a: str = Field(..., min_length=1, max_length=10)
+    ticker_b: str = Field(..., min_length=1, max_length=10)
+    start: str = "2020-01-01"
+    end: str = "2024-12-31"
+    zscore_lookback: int = Field(60, ge=5, le=252)
+    entry_z: float = Field(2.0, gt=0, le=5)
+    exit_z: float = Field(0.5, ge=0, lt=5)
+    rolling_beta: bool = False
+    beta_lookback: int = Field(60, ge=10, le=252)
+    train_fraction: float = Field(0.7, gt=0, lt=1)
+    initial_capital: float = Field(100_000.0, gt=0)
+    transaction_cost: float = Field(0.001, ge=0, le=0.01)
+    model_type: str = Field("gbm", pattern="^(lr|gbm|rf)$")
+    n_bars_target: int = Field(5, ge=1, le=30)
+    long_threshold: float = Field(0.6, gt=0.5, lt=1.0)
+    short_threshold: float = Field(0.4, gt=0.0, lt=0.5)
+    include_threshold_sweep: bool = True
+
+
+def _kpi_dict(summary) -> dict:
+    return {k: _safe(v) for k, v in summary.as_dict().items()}
+
+
+@app.post("/api/ml-signals")
+def run_ml_signals(req: MLSignalsRequest) -> dict:
+    ticker_a = req.ticker_a.upper().strip()
+    ticker_b = req.ticker_b.upper().strip()
+
+    if ticker_a == ticker_b:
+        raise HTTPException(400, "ticker_a and ticker_b must be different")
+
+    try:
+        params = PairsParams(
+            zscore_lookback=req.zscore_lookback,
+            entry_z=req.entry_z,
+            exit_z=req.exit_z,
+            rolling_beta=req.rolling_beta,
+            beta_lookback=req.beta_lookback,
+            train_fraction=0.5,  # baseline split — independent of ML train_fraction
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+    config = BacktestConfig(
+        initial_capital=req.initial_capital,
+        transaction_cost=req.transaction_cost,
+    )
+
+    loader = PriceLoader(cache_dir=str(CACHE_DIR))
+    try:
+        panel = loader.fetch([ticker_a, ticker_b], start=req.start, end=req.end)
+    except Exception as exc:
+        raise HTTPException(400, detail=f"Failed to fetch price data: {exc}") from exc
+
+    try:
+        run = run_ml_backtest(
+            panel, ticker_a, ticker_b, params, config,
+            model_type=req.model_type,
+            n_bars_target=req.n_bars_target,
+            train_fraction=req.train_fraction,
+            long_threshold=req.long_threshold,
+            short_threshold=req.short_threshold,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, detail=f"ML backtest failed: {exc}") from exc
+
+    model = run.model
+
+    # Feature importances ranked desc
+    importance_rows = [
+        {"feature": name, "importance": float(val)}
+        for name, val in sorted(
+            model.feature_importance.items(), key=lambda kv: kv[1], reverse=True
+        )
+    ]
+
+    # ROC curve — limit points to keep payload light
+    roc_fpr = model.roc_curve.get("fpr", [])
+    roc_tpr = model.roc_curve.get("tpr", [])
+    if len(roc_fpr) > 200:
+        step = max(1, len(roc_fpr) // 200)
+        roc_fpr = roc_fpr[::step]
+        roc_tpr = roc_tpr[::step]
+    roc_curve_points = [
+        {"fpr": float(f), "tpr": float(t)} for f, t in zip(roc_fpr, roc_tpr)
+    ]
+
+    # Feature time series — z-score, ML probability, normalized price spread
+    signals = run.baseline_signals
+    portfolio = run.baseline_result.portfolio
+    feature_ts_index = signals.zscore.index
+    feature_ts = _series_to_records(
+        feature_ts_index,
+        zscore=signals.zscore,
+        ml_prob=model.prob_full.reindex(feature_ts_index),
+        ml_signal=model.signal_full.reindex(feature_ts_index).astype(float),
+        spread=signals.spread,
+        price_a=portfolio["price_a"],
+        price_b=portfolio["price_b"],
+    )
+
+    # Equity comparison series
+    baseline_equity = _series_to_records(
+        run.baseline_result.portfolio.index,
+        value=run.baseline_result.portfolio["equity"],
+    )
+    ml_equity = _series_to_records(
+        run.ml_result.portfolio.index,
+        value=run.ml_result.portfolio["equity"],
+    )
+
+    test_start = (
+        model.test_index[0].strftime("%Y-%m-%d") if len(model.test_index) else None
+    )
+    test_end = (
+        model.test_index[-1].strftime("%Y-%m-%d") if len(model.test_index) else None
+    )
+
+    # ── Threshold sweep ──────────────────────────────────────
+    sweep_rows: list[dict] = []
+    sweep_summary: dict | None = None
+    if req.include_threshold_sweep:
+        try:
+            price_a = run.baseline_result.portfolio["price_a"]
+            price_b = run.baseline_result.portfolio["price_b"]
+            sweep_rows = threshold_sweep(
+                price_a, price_b,
+                run.baseline_signals, model, config,
+            )
+        except Exception as exc:
+            raise HTTPException(500, detail=f"Threshold sweep failed: {exc}") from exc
+
+        baseline_sharpe = run.baseline_summary.sharpe_ratio
+        baseline_return = run.baseline_summary.total_return
+
+        # Identify the best Sharpe row that has at least one trade.
+        scoreable = [
+            r for r in sweep_rows
+            if r["sharpe_ratio"] is not None and r["n_trades"] > 0
+        ]
+        best = max(scoreable, key=lambda r: r["sharpe_ratio"]) if scoreable else None
+
+        beats_baseline = (
+            best is not None
+            and baseline_sharpe is not None
+            and not math.isnan(baseline_sharpe)
+            and best["sharpe_ratio"] > baseline_sharpe
+        )
+
+        if best is None:
+            summary_text = (
+                "No threshold pair produced any trades — the model's confidence "
+                "never cleared the lowest long threshold in this window."
+            )
+        elif beats_baseline:
+            delta = best["sharpe_ratio"] - (baseline_sharpe or 0.0)
+            summary_text = (
+                f"Best sweep config (t_hi={best['long_threshold']:.2f}, "
+                f"t_lo={best['short_threshold']:.2f}) beats baseline Sharpe by "
+                f"{delta:+.2f} with {best['n_trades']} trades and "
+                f"${best['total_costs']:,.0f} in costs."
+            )
+        else:
+            summary_text = (
+                f"No threshold pair beat the baseline Sharpe of "
+                f"{baseline_sharpe:.2f}; best ML Sharpe was "
+                f"{best['sharpe_ratio']:.2f} at t_hi={best['long_threshold']:.2f}."
+            )
+
+        sweep_summary = {
+            "baseline_sharpe": _safe(baseline_sharpe),
+            "baseline_return": _safe(baseline_return),
+            "baseline_n_trades": int(run.baseline_summary.n_trades),
+            "baseline_total_costs": _safe(run.baseline_summary.total_costs),
+            "best": best,
+            "beats_baseline": bool(beats_baseline),
+            "summary_text": summary_text,
+            "grid_size": len(sweep_rows),
+        }
+
+    return {
+        "ticker_a": ticker_a,
+        "ticker_b": ticker_b,
+        "model_type": model.model_type,
+        "model_label": model.model_label,
+        "params": {
+            "zscore_lookback": params.zscore_lookback,
+            "entry_z": params.entry_z,
+            "exit_z": params.exit_z,
+            "rolling_beta": params.rolling_beta,
+            "beta_lookback": params.beta_lookback,
+            "train_fraction": req.train_fraction,
+            "n_bars_target": req.n_bars_target,
+            "long_threshold": req.long_threshold,
+            "short_threshold": req.short_threshold,
+        },
+        "classification_metrics": {
+            k: _safe(v) for k, v in model.metrics.items()
+        },
+        "feature_importance": importance_rows,
+        "feature_columns": FEATURE_COLUMNS,
+        "roc_curve": roc_curve_points,
+        "calibration": model.calibration,
+        "test_window": {"start": test_start, "end": test_end},
+        "baseline_metrics": _kpi_dict(run.baseline_summary),
+        "ml_metrics": _kpi_dict(run.ml_summary),
+        "timeseries": {
+            "features": feature_ts,
+            "baseline_equity": baseline_equity,
+            "ml_equity": ml_equity,
+        },
+        "threshold_sweep": {
+            "grid": sweep_rows,
+            "summary": sweep_summary,
+        },
     }

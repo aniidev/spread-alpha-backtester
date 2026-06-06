@@ -15,6 +15,7 @@ async function req(path, opts = {}) {
 export const api = {
   runBacktest:   (params) => req('/backtest',    { method: 'POST', body: JSON.stringify(params) }),
   runRobustness: (params) => req('/robustness',  { method: 'POST', body: JSON.stringify(params) }),
+  runMLSignals:  (params) => req('/ml-signals',  { method: 'POST', body: JSON.stringify(params) }),
   getHistory:    ()       => req('/history'),
   getRun:        (id)     => req(`/runs/${id}`),
   clearHistory:  ()       => req('/history', { method: 'DELETE' }),

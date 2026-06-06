@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Activity, BarChart2, FlaskConical, Search } from 'lucide-react'
+import { Activity, BarChart2, FlaskConical, Search, Brain } from 'lucide-react'
 import { api } from './api/client.js'
 import PairSelector from './components/PairSelector.jsx'
 import RunHistory from './components/RunHistory.jsx'
@@ -12,6 +12,7 @@ import TradeHistogramChart from './components/TradeHistogramChart.jsx'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import RobustnessLab from './components/RobustnessLab.jsx'
 import PairDiscovery from './components/PairDiscovery.jsx'
+import MLSignals from './components/MLSignals.jsx'
 
 // ── Empty state ───────────────────────────────────────────────
 
@@ -119,6 +120,7 @@ function exportTradesToCsv(result) {
 const TABS = [
   { id: 'backtest',   label: 'Backtest',       Icon: BarChart2    },
   { id: 'robustness', label: 'Robustness Lab',  Icon: FlaskConical },
+  { id: 'ml',         label: 'ML Signals',      Icon: Brain        },
   { id: 'discovery',  label: 'Pair Discovery',  Icon: Search       },
 ]
 
@@ -333,6 +335,10 @@ export default function App() {
                 robError={robError}
                 onRun={handleRunRobustness}
                 loading={loading}
+              />
+            ) : activeTab === 'ml' ? (
+              <MLSignals
+                initialPair={result ? { ticker_a: result.ticker_a, ticker_b: result.ticker_b } : null}
               />
             ) : !result ? (
               <EmptyState />
